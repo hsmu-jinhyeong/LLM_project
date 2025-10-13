@@ -5,6 +5,8 @@
 
 ## 1. 참고 프로젝트 
 
+https://github.com/AhmadYasser1/Food-Recommending-Chatbot?utm_source=chatgpt.com
+
 ### 1.1. 프로젝트 주제 :
 Mr.Hungry
 
