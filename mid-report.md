@@ -49,6 +49,57 @@ LLM을 기반으로 사용자의 대화 의도를 분석
 
 #### 2.2.2. 선행기술 및 사례 분석  *필수작성
 
+##### 1. 관련 기술 동향
+
+**대화형 AI 기술의 발전**
+- ChatGPT, Claude 등 대규모 언어모델(LLM)이 일반에 공개되어 누구나 대화형 AI 활용 가능
+- LangChain 프레임워크를 통해 학생 개발자도 쉽게 LLM 기반 애플리케이션 제작 가능
+- Streamlit을 활용한 빠른 프로토타입 개발이 가능해져 교육용 프로젝트에 적합
+
+**음식 추천 서비스의 대중화**
+- 배달앱의 추천 기능이 일상화되면서 사용자들이 AI 추천에 익숙해짐
+- 단순 룰 기반에서 학습 기반 추천으로 발전 중
+
+##### 2. 기존 유사 시스템 분석
+
+** 간단한 추천 시스템들**
+
+| 비교 대상 | 방식 | 장점 | 단점 |
+|---------|------|------|------|
+| **랜덤 룰렛 앱** | 랜덤 선택 | 빠르고 간단함 | 개인화 없음, 상황 고려 X |
+| **ChatGPT 직접 사용** | 자유 대화 | 자연스러운 대화 | 구조화 안됨, 일관성 부족 |
+| **설문 기반 추천** | 정적 설문 → 결과 | 명확한 흐름 | 유연성 부족, 재사용 불가 |
+
+** 학습 참고 자료**
+
+- **LangChain 공식 문서** (https://python.langchain.com/)
+  - ConversationChain, Memory 기능 활용법
+  - 본 프로젝트에서 대화 흐름 관리에 적용 예정
+
+- **Streamlit 튜토리얼** (https://docs.streamlit.io/)
+  - 채팅 인터페이스 구현 방법
+  - session_state를 통한 대화 기록 관리
+
+- **Do it! LLM을 활용한 AI 에이전트 개발 입문** (이성용, 이지스퍼블리싱, 2024)
+  - LangChain 프레임워크 활용법 및 RAG 구현
+  - 프롬프트 엔지니어링 기법
+  - 본 프로젝트의 시스템 프롬프트 설계 및 대화 관리에 참고
+
+##### 3. 기존 방식의 한계점
+
+**단순 랜덤 선택의 문제**
+- 사용자의 현재 상황(시간대, 날씨, 기분)을 전혀 고려하지 못함
+- 매번 다른 결과로 신뢰도 낮음
+
+**ChatGPT 직접 사용의 문제**
+- 매번 처음부터 상황을 설명해야 함
+- 추천 기준이 일관되지 않음
+- 개인 선호도를 저장하지 못함
+
+**정적 설문 방식의 문제**
+- 정해진 질문만 가능하여 유연성 부족
+- 추가 질문이나 조건 변경 어려움
+
 \
 
 ### 2.3 목표 및 내용  
@@ -59,10 +110,208 @@ LLM을 기반으로 사용자의 대화 의도를 분석
 
 #### 2.3.2. 개발 내용  *필수작성
 
+##### 개발 범위 및 구성
 
+**최종 결과물**: LangChain 기반 대화형 메뉴 추천 챗봇 (Streamlit 웹 앱)
+
+**핵심 기능**:
+1. 자연어 대화를 통한 메뉴 추천
+2. 사용자 상황 인식 (시간, 기분, 선호도)
+3. RAG(Retrieval-Augmented Generation) 기반 레시피 검색
+4. 대화 기록 유지 및 문맥 파악
+
+**데이터셋**: 만개의레시피 데이터 (23,192개 레시피)
+- 레시피명, 재료, 조리방법, 카테고리 등 19개 컬럼
+- OpenAI 임베딩을 통한 벡터화
+- ChromaDB를 활용한 벡터 DB 구축
+
+##### 시스템 아키텍처 (블록 다이어그램)
+
+```mermaid
+graph TB
+    subgraph "사용자 인터페이스"
+        A[Streamlit 웹 앱]
+    end
+    
+    subgraph "대화 관리 계층"
+        B[LangChain ConversationChain]
+        C[Memory<br/>대화 기록 저장]
+        D[Session State<br/>사용자 선호도]
+    end
+    
+    subgraph "추천 로직"
+        E[감성 분석<br/>HuggingFace Transformers]
+        F[시스템 프롬프트<br/>상황별 맞춤]
+    end
+    
+    subgraph "데이터 검색 RAG"
+        G[벡터 임베딩<br/>OpenAI API]
+        H[벡터 DB<br/>FAISS/ChromaDB]
+        I[레시피 검색<br/>유사도 기반]
+    end
+    
+    subgraph "LLM 응답 생성"
+        J[GPT-3.5/4<br/>OpenAI API]
+    end
+    
+    subgraph "데이터 소스"
+        K[만개의레시피<br/>23,192개]
+    end
+    
+    A --> B
+    B --> C
+    B --> D
+    B --> E
+    B --> F
+    F --> G
+    G --> H
+    H --> I
+    I --> J
+    E --> J
+    J --> A
+    K --> G
+    
+    style A fill:#e1f5ff
+    style B fill:#fff3e0
+    style J fill:#f3e5f5
+    style H fill:#e8f5e9
+```
+
+##### 시퀀스 다이어그램 (대화 흐름)
+
+```mermaid
+sequenceDiagram
+    participant U as 사용자
+    participant S as Streamlit UI
+    participant L as LangChain
+    participant M as Memory
+    participant SA as 감성분석
+    participant V as 벡터DB
+    participant G as GPT API
+    
+    U->>S: "오늘 저녁 뭐 먹을까?"
+    S->>L: 사용자 입력 전달
+    L->>M: 이전 대화 기록 조회
+    M-->>L: 대화 컨텍스트 반환
+    
+    L->>SA: 감성 분석 요청
+    SA-->>L: 감성 정보 (긍정/부정)
+    
+    L->>V: 쿼리 임베딩 + 유사 레시피 검색
+    V->>V: 코사인 유사도 계산
+    V-->>L: 상위 3개 레시피 반환
+    
+    L->>G: 시스템 프롬프트 + 검색 결과 + 사용자 질문
+    Note over L,G: 프롬프트: "현재 시간, 감성, 검색된 레시피 고려"
+    G-->>L: 추천 메뉴 + 설명
+    
+    L->>M: 대화 저장
+    L-->>S: 챗봇 응답
+    S-->>U: "따뜻한 김치찌개 추천드려요..."
+    
+    U->>S: "매운 건 싫어"
+    S->>L: 추가 조건 입력
+    L->>M: 이전 대화 + 새 조건
+    L->>V: 재검색 (매운맛 제외)
+    V-->>L: 필터링된 레시피
+    L->>G: 업데이트된 추천 요청
+    G-->>L: 수정된 추천
+    L-->>S: 새로운 추천
+    S-->>U: "된장찌개는 어떠세요?"
+```
+
+##### 상세 처리 흐름 (컴포넌트 관계)
+
+```mermaid
+flowchart LR
+    subgraph Input["입력 단계"]
+        I1[사용자 질문]
+        I2[현재 시간]
+        I3[이전 대화 기록]
+    end
+    
+    subgraph Process["처리 단계"]
+        P1[감성 분석]
+        P2[텍스트 임베딩]
+        P3[벡터 검색<br/>top-k=3]
+        P4[프롬프트 구성]
+    end
+    
+    subgraph Context["컨텍스트"]
+        C1[검색된 레시피 정보]
+        C2[사용자 감성 상태]
+        C3[시간대/상황 정보]
+    end
+    
+    subgraph LLM["LLM 생성"]
+        L1[GPT API 호출]
+        L2[응답 생성]
+    end
+    
+    subgraph Output["출력 단계"]
+        O1[추천 메뉴]
+        O2[추천 이유]
+        O3[대화 기록 저장]
+    end
+    
+    I1 --> P1
+    I1 --> P2
+    I2 --> C3
+    I3 --> P4
+    
+    P1 --> C2
+    P2 --> P3
+    P3 --> C1
+    
+    C1 --> P4
+    C2 --> P4
+    C3 --> P4
+    
+    P4 --> L1
+    L1 --> L2
+    
+    L2 --> O1
+    L2 --> O2
+    L2 --> O3
+    
+    style Input fill:#e3f2fd
+    style Process fill:#fff9c4
+    style Context fill:#f3e5f5
+    style LLM fill:#ffebee
+    style Output fill:#e8f5e9
+```
+           
            
 
 #### 2.3.4. 개발 환경
+
+##### 학습 환경
+* **GPU**: 불필요 (임베딩 생성만 수행, API 사용)
+* **RAM**: 16GB
+
+##### 개발 환경
+
+**프로그래밍 언어**
+- Python 3.12
+
+**주요 프레임워크 및 라이브러리**
+- **LangChain** (v0.1+): 대화 관리, RAG 구현
+- **Streamlit**: 웹 UI 구현
+- **OpenAI Python SDK**: GPT API, 임베딩 API
+- **HuggingFace Transformers**: 감성 분석 모델
+- **ChromaDB**: 벡터 데이터베이스
+- **pandas**: 데이터 처리
+- **tiktoken**: 토큰 계산
+
+**개발 도구**
+- VS Code / Jupyter Notebook
+- Git (버전 관리)
+- Anaconda (가상환경)
+
+**API 및 서비스**
+- OpenAI API (GPT-3.5-turbo 또는 GPT-4)
+- OpenAI Embeddings (text-embedding-3-small)
+
 
 
 #### 2.3.5. 결과 *필수작성
