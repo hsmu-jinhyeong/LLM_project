@@ -1,0 +1,2 @@
+recipe_full.index filter=lfs diff=lfs merge=lfs -text
+recipe_full.parquet filter=lfs diff=lfs merge=lfs -text
