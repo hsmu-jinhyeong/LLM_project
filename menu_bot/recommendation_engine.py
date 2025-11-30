@@ -73,6 +73,7 @@ def create_recommendation_prompt(user_input: str, sentiment_data: Dict[str, Any]
 - "단백질"이 사용자 입력에 포함되거나 운동 관련 맥락이면, 각 추천의 reason에 단백질 근거(예: 닭가슴살/두부/달걀/콩/참치)를 명시하세요.
 - 시간 제약이 언급되면 reason에 대략적인 조리 시간(예: ~15분)을 언급하세요.
 - "데이트" 또는 "분위기"가 언급되면, 플레이팅/분위기/감성 요소를 이유에 반영하고, 요청된 음식 유형(예: 양식/한식/일식/중식)을 최대한 존중하세요.
+- "모임", "단체", "파티", "회식", "동창회" 등 다인이 함께 먹는 상황이면, 1인용 도시락/개별 포장 메뉴보다 공유/파티형 메뉴(플래터, 핑거푸드, 대접용 파스타·샐러드, 한상 차림)를 우선 추천하세요. 도시락은 피하거나 보조 옵션으로만 언급하세요.
 - 레시피가 없으면 영양/소화 측면에서 일반적인 안전 식단 1개만 추천하고 fallback_used=true 유지.
 - JSON 외 다른 텍스트 출력 금지.
 """
@@ -155,19 +156,72 @@ def recommend_with_rag(user_input: str, search_fn, top_k: int = 3):
     else:
         sentiment = {"label": "NEUTRAL", "score": 0.0, "description": "중립"}
     current_time = get_current_time()
-    # Heuristic cuisine/occasion boosting for search terms
-    lower = user_input.lower()
-    cuisine_boost = []
-    if any(k in lower for k in ["양식", "서양", "western", "date", "데이트"]):
-        cuisine_boost += ["파스타", "스테이크", "샐러드", "피자", "그라탕", "리소토"]
-    if any(k in lower for k in ["한식", "korean"]):
-        cuisine_boost += ["찌개", "비빔밥", "불고기", "전", "국", "나물"]
-    if any(k in lower for k in ["일식", "japanese"]):
-        cuisine_boost += ["스시", "우동", "라멘", "덴푸라", "가츠"]
-    if any(k in lower for k in ["중식", "chinese"]):
-        cuisine_boost += ["짜장", "짬뽕", "마라", "탕수육", "볶음"]
-    boost_str = (" " + " ".join(set(cuisine_boost))) if cuisine_boost else ""
-    search_query = f"{user_input} ({sentiment['description']} 관련){boost_str}"
+    # Build intent-aware boost tokens to stabilize retrieval
+    def build_boost_tokens(text: str) -> list[str]:
+        t = text.lower()
+        tokens: list[str] = []
+        # Occasion & group size
+        group_keys = ["모임", "단체", "파티", "회식", "동창회", "친목", "소모임", "포트럭", "피크닉", "홈파티"]
+        if any(k in t for k in group_keys):
+            tokens += ["플래터", "핑거푸드", "한상", "대용량", "공유", "샤링", "파티", "대접용 파스타", "대접용 샐러드"]
+            tokens += ["도시락 제외", "개별 포장 제외"]
+        # Cuisine anchors
+        if any(k in t for k in ["양식", "서양", "western", "date", "데이트"]):
+            tokens += ["파스타", "스테이크", "리소토", "라자냐", "브루스케타", "샐러드", "바게트", "플래터", "핑거푸드", "플레이팅", "로맨틱"]
+        if any(k in t for k in ["한식", "korean"]):
+            tokens += ["한상", "비빔", "구이", "찜", "전", "나물", "국", "탕"]
+        if any(k in t for k in ["일식", "japanese"]):
+            tokens += ["초밥", "사시미", "덮밥", "우동", "야키소바", "오니기리", "가라아게"]
+        if any(k in t for k in ["중식", "chinese"]):
+            tokens += ["딤섬", "마라", "볶음", "탕", "면", "교자", "훠궈"]
+        # Diet & allergy
+        if any(k in t for k in ["비건", "vegan"]):
+            tokens += ["두부", "콩", "병아리콩", "렌틸", "버섯", "식물성"]
+        if any(k in t for k in ["저염", "low salt", "low_salt"]):
+            tokens += ["저염", "무염", "염도 낮음", "싱겁게"]
+        if any(k in t for k in ["알레르기", "allergy", "allergies"]):
+            tokens += ["새우 제외", "땅콩 제외", "우유 제외", "글루텐 프리", "난류 제외"]
+        # Nutrition & goals
+        if any(k in t for k in ["단백질", "protein", "헬스", "운동"]):
+            tokens += ["닭가슴살", "두부", "달걀", "콩", "참치", "그릭 요거트"]
+        if any(k in t for k in ["다이어트", "diet", "저칼로리", "라이트"]):
+            tokens += ["저칼로리", "라이트", "샐러드", "구이", "에어프라이어"]
+        # Comfort/soothing foods
+        if any(k in t for k in ["속", "안 좋아", "편안", "위로", "따뜻", "부드럽", "자극", "comfort"]):
+            tokens += ["죽", "미음", "스프", "따뜻한", "부드러운", "자극 적음"]
+        # Desserts / mood uplift
+        if any(k in t for k in ["디저트", "달콤", "기분", "우울", "uplift", "sweet", "디저트 추천"]):
+            tokens += ["디저트", "케이크", "초코", "타르트", "쿠키", "무스"]
+        # Time & effort
+        if any(k in t for k in ["빨리", "빠른", "간단", "10분", "15분", "즉석"]):
+            tokens += ["10분", "15분", "간단", "즉석", "스피드"]
+        if any(k in t for k in ["정성", "코스", "오븐", "숙성", "슬로우"]):
+            tokens += ["저온", "숙성", "오븐", "장시간", "슬로우"]
+        # Flavor & texture
+        if any(k in t for k in ["담백", "달콤", "매운", "새콤", "감칠", "고소"]):
+            tokens += ["담백", "달콤", "매운", "새콤", "감칠맛", "고소"]
+        if any(k in t for k in ["바삭", "촉촉", "부드러운"]):
+            tokens += ["바삭", "촉촉", "부드러운"]
+        # Weather/season
+        if any(k in t for k in ["겨울", "추운", "스튜", "국물"]):
+            tokens += ["따뜻한", "국", "탕", "스튜"]
+        if any(k in t for k in ["여름", "더운", "상큼"]):
+            tokens += ["상큼한", "차가운", "샐러드", "냉파스타", "냉모밀"]
+        if any(k in t for k in ["비", "비오는", "장마"]):
+            tokens += ["따뜻한", "국물", "전", "바삭"]
+        # Deduplicate and cap length
+        seen = set()
+        capped = []
+        for w in tokens:
+            if w not in seen:
+                seen.add(w)
+                capped.append(w)
+            if len(capped) >= 12:
+                break
+        return capped
+
+    boost_tokens = build_boost_tokens(user_input)
+    search_query = user_input + (" " + " ".join(boost_tokens) if boost_tokens else "")
     retrieved = search_fn(search_query, top_k=top_k)
     if not retrieved:
         retrieved = [{"title": "기본 위로 음식", "content": "속이 편안한 죽 / 미음 / 계란찜 등 자극 적은 메뉴"}]
