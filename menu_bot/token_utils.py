@@ -1,5 +1,8 @@
-import tiktoken
 import pandas as pd
+try:
+    import tiktoken  # optional dependency
+except Exception:
+    tiktoken = None
 
 # -------------------- Token Utilities --------------------
 
@@ -12,6 +15,8 @@ def count_tokens(text: str, model: str = "gpt-3.5-turbo") -> int:
     Returns:
         Number of tokens.
     """
+    if tiktoken is None:
+        raise ModuleNotFoundError("tiktoken is not installed. Install it or avoid token counting.")
     encoding = tiktoken.encoding_for_model(model)
     return len(encoding.encode(text or ""))
 
@@ -27,6 +32,8 @@ def analyze_token_statistics(df: pd.DataFrame, content_column: str = 'RECIPE_CON
     """
     if content_column not in df.columns:
         raise ValueError(f"Column '{content_column}' not in DataFrame")
+    if tiktoken is None:
+        raise ModuleNotFoundError("tiktoken is not installed. Install it to analyze token statistics.")
     df['token_count'] = df[content_column].apply(lambda x: count_tokens(x, model=model))
     print("📊 Token Stats:")
     print(f"Avg: {df['token_count'].mean():.0f}")
