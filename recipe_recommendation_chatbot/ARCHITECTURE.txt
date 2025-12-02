@@ -1,0 +1,301 @@
+"""
+LangChain & LangGraph 아키텍처 비교
+
+=============================================================================
+기존 menu_bot 아키텍처
+=============================================================================
+
+[사용자 입력]
+     ↓
+[sentiment_module.get_user_sentiment()]  ← Transformers pipeline
+     ↓
+[search.search_with_faiss()]  ← 함수 호출
+     ↓
+[recommendation_engine.recommend_with_rag()]  ← GPT API 직접 호출
+     ↓
+[JSON 응답 반환]
+
+문제점:
+- 각 단계가 독립적인 함수로 구현되어 재사용성 낮음
+- 상태 관리 없음 (대화 히스토리 추적 불가)
+- 에러 처리 및 재시도 로직 수동 구현 필요
+- 표준화된 인터페이스 부재
+- 디버깅 및 모니터링 어려움
+
+=============================================================================
+신규 menu_bot_langchain 아키텍처
+=============================================================================
+
+┌─────────────────────────────────────────────────────────────────┐
+│                    LangGraph Workflow                           │
+│                                                                 │
+│  [START]                                                        │
+│     ↓                                                           │
+│  ┌──────────────────────┐                                      │
+│  │ analyze_sentiment    │  ← SentimentAnalysisTool             │
+│  │ (Node)               │                                       │
+│  └──────────────────────┘                                      │
+│     ↓                                                           │
+│  [Conditional Edge: should_search_recipes()]                   │
+│     ↓                                                           │
+│  ┌──────────────────────┐                                      │
+│  │ search_recipes       │  ← FAISSRecipeRetriever              │
+│  │ (Node)               │  ← RecipeSearchTool                  │
+│  └──────────────────────┘                                      │
+│     ↓                                                           │
+│  ┌──────────────────────┐                                      │
+│  │ generate_recommendations │  ← ChatOpenAI + LCEL Chain       │
+│  │ (Node)                   │  ← JsonOutputParser              │
+│  └──────────────────────┘                                      │
+│     ↓                                                           │
+│  [END] → RecommendationState                                   │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+
+RecommendationState (TypedDict):
+- messages: List[BaseMessage]  ← 대화 히스토리
+- user_input: str
+- sentiment_data: dict
+- search_results: list
+- recommendations: list
+- current_time: str
+- iteration_count: int
+
+=============================================================================
+LangChain Components 상세
+=============================================================================
+
+1. FAISSRecipeRetriever (BaseRetriever 상속)
+   ┌──────────────────────────────────────────┐
+   │ LangChain Standard Interface             │
+   │                                          │
+   │ - _get_relevant_documents(query)         │
+   │ - async _aget_relevant_documents(query)  │
+   │ - invoke() / ainvoke()                   │
+   │ - batch() / abatch()                     │
+   │ - stream() / astream()                   │
+   └──────────────────────────────────────────┘
+   
+   장점:
+   - 다른 LangChain 컴포넌트와 즉시 호환
+   - 자동 배치 처리, 스트리밍 지원
+   - LangSmith 트레이싱 자동 연동
+
+2. LCEL Chain (LangChain Expression Language)
+   
+   chain = (
+       RunnableParallel({
+           "context": retriever | format_docs,
+           "user_input": RunnablePassthrough(),
+           "sentiment": sentiment_analyzer,
+       })
+       | prompt_template
+       | llm
+       | JsonOutputParser()
+   )
+   
+   특징:
+   - 선언적 파이프라인 (읽기 쉬운 코드)
+   - 자동 병렬 실행 (RunnableParallel)
+   - 타입 안정성 (Pydantic 통합)
+   - 중간 결과 스트리밍 가능
+
+3. LangChain Tools
+   
+   RecipeSearchTool(BaseTool):
+   - name: "search_recipes"
+   - description: "벡터 검색 기반 레시피 조회"
+   - args_schema: RecipeSearchInput (Pydantic)
+   - _run(query, top_k) → str
+   
+   SentimentAnalysisTool(BaseTool):
+   - name: "get_user_sentiment"
+   - description: "감성 분석 (긍정/부정/중립)"
+   - args_schema: SentimentAnalysisInput
+   - _run(text) → dict
+   
+   용도:
+   - Agent에서 Function Calling으로 사용
+   - 도구 체이닝 (Tool → Tool → LLM)
+   - 자동 입력 검증
+
+=============================================================================
+LangGraph 상세 구조
+=============================================================================
+
+StateGraph:
+┌─────────────────────────────────────────────────────────────┐
+│                                                             │
+│  Node: analyze_sentiment                                    │
+│  ├─ Input: RecommendationState                             │
+│  ├─ Logic: get_user_sentiment(state["user_input"])         │
+│  └─ Output: {sentiment_data: {...}}                        │
+│                                                             │
+│  Conditional Edge: should_search_recipes()                 │
+│  ├─ Condition: "추천" in user_input?                       │
+│  ├─ True → "search_recipes"                                │
+│  └─ False → "generate_recommendations"                     │
+│                                                             │
+│  Node: search_recipes                                       │
+│  ├─ Input: state + sentiment_data                          │
+│  ├─ Logic: retriever.get_relevant_documents(query)         │
+│  └─ Output: {search_results: [...]}                        │
+│                                                             │
+│  Node: generate_recommendations                             │
+│  ├─ Input: state + search_results                          │
+│  ├─ Logic: llm.invoke(prompt)                              │
+│  └─ Output: {recommendations: [...]}                       │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+
+장점:
+1. 명확한 상태 추적 (모든 중간 단계 저장)
+2. 조건부 라우팅 (유연한 워크플로우)
+3. 에러 발생 시 특정 노드부터 재시작 가능
+4. 대화 히스토리 자동 관리
+5. 병렬 노드 실행 가능 (향후 확장)
+
+=============================================================================
+실행 흐름 비교
+=============================================================================
+
+기존 (menu_bot):
+1. sentiment = get_user_sentiment(text)
+2. results = search_with_faiss(query, index, data)
+3. response = recommend_with_rag(text, search_fn)
+4. return response
+
+↓ 문제점:
+- 각 단계가 독립적 (상태 공유 없음)
+- 에러 시 전체 재실행
+- 중간 결과 확인 어려움
+
+신규 (menu_bot_langchain):
+1. graph = create_recommendation_graph(retriever)
+2. final_state = run_recommendation_workflow(graph, user_input)
+3. return final_state['recommendations']
+
+↓ 장점:
+- 모든 상태가 RecommendationState에 저장
+- 각 노드별 독립 실행 가능
+- 중간 결과 실시간 확인
+- 디버깅 용이 (state 출력)
+
+=============================================================================
+코드 예시 비교
+=============================================================================
+
+[기존] 함수 기반 추천
+─────────────────────────────────────────────────────────
+def recommend_with_rag(user_input, search_fn, top_k=3):
+    sentiment = get_user_sentiment(user_input)
+    results = search_fn(user_input, top_k)
+    
+    context = format_recipe_context(results)
+    prompt = create_recommendation_prompt(
+        user_input, sentiment, results, get_current_time()
+    )
+    
+    messages = [{"role": "user", "content": prompt}]
+    response = _chat_with_retry(messages)
+    
+    return response.choices[0].message.content
+
+
+[신규] LangChain LCEL 기반
+─────────────────────────────────────────────────────────
+def create_recommendation_chain(retriever, llm=None):
+    if llm is None:
+        llm = ChatOpenAI(model="gpt-4o")
+    
+    chain = (
+        RunnableParallel({
+            "context": retriever | format_docs,
+            "user_input": lambda x: x["user_input"],
+            "sentiment": lambda x: x["sentiment_data"]["description"],
+        })
+        | RECOMMENDATION_PROMPT
+        | llm
+        | JsonOutputParser()
+    )
+    
+    return chain
+
+# 사용
+result = chain.invoke({
+    "user_input": "...",
+    "sentiment_data": {...}
+})
+
+차이점:
+1. 선언적 파이프라인 (읽기 쉬움)
+2. 자동 에러 처리 및 재시도
+3. 스트리밍 지원 (chain.stream())
+4. 배치 처리 지원 (chain.batch([...]))
+
+=============================================================================
+확장 시나리오
+=============================================================================
+
+[시나리오 1] Multi-Agent System
+──────────────────────────────────
+graph.add_node("search_agent", SearchAgent())
+graph.add_node("recommendation_agent", RecommendationAgent())
+graph.add_node("nutrition_agent", NutritionAgent())
+
+graph.add_conditional_edges(
+    "search_agent",
+    route_by_intent,
+    {
+        "recommend": "recommendation_agent",
+        "nutrition": "nutrition_agent",
+    }
+)
+
+[시나리오 2] Memory 통합
+──────────────────────────────────
+from langchain.memory import ConversationBufferMemory
+
+memory = ConversationBufferMemory(return_messages=True)
+
+chain_with_memory = (
+    RunnablePassthrough.assign(
+        history=lambda x: memory.load_memory_variables({})
+    )
+    | chain
+)
+
+[시나리오 3] Advanced RAG
+──────────────────────────────────
+from langchain.retrievers import ContextualCompressionRetriever
+from langchain.retrievers.document_compressors import LLMChainExtractor
+
+compressor = LLMChainExtractor.from_llm(llm)
+compression_retriever = ContextualCompressionRetriever(
+    base_compressor=compressor,
+    base_retriever=retriever
+)
+
+=============================================================================
+성능 및 비용 비교
+=============================================================================
+
+기존 (menu_bot):
+- API 호출: 직접 관리
+- 재시도: 수동 구현
+- 캐싱: 별도 구현 필요
+- 모니터링: 로그 수동 추가
+
+신규 (menu_bot_langchain):
+- API 호출: LangChain 자동 관리
+- 재시도: 내장 (exponential backoff)
+- 캐싱: @lru_cache + LangChain 캐싱
+- 모니터링: LangSmith 자동 연동 가능
+
+예상 개선:
+- 개발 시간: 30% 감소 (표준 컴포넌트 재사용)
+- 디버깅 시간: 50% 감소 (트레이싱)
+- 유지보수: 40% 개선 (모듈화)
+
+=============================================================================
+"""
